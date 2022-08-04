@@ -1,49 +1,51 @@
 package memoize
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/patrickmn/go-cache"
 	"golang.org/x/sync/singleflight"
 )
 
-// Memoizer allows you to memoize function calls. Memoizer is safe for concurrent use by multiple goroutines.
-type Memoizer struct {
-
-	// Storage exposes the underlying cache of memoized results to manipulate as desired - for example, to Flush().
-	Storage *cache.Cache
-
-	group singleflight.Group
+type memoizer1To1[I1 any, O1 any] struct {
+	storage *cache.Cache
+	group   singleflight.Group
+	fn      func(I1) (O1, error)
 }
 
-// NewMemoizer creates a new Memoizer with the configured expiry and cleanup policies.
-// If desired, use cache.NoExpiration to cache values forever.
-func NewMemoizer(defaultExpiration, cleanupInterval time.Duration) *Memoizer {
-	return &Memoizer{
-		Storage: cache.New(defaultExpiration, cleanupInterval),
+// Memoize1To1 memoizes a function with 1 input and 1 output parameter. If the underlying function errors,
+// the result is not cached.
+func Memoize1To1[I1 any, O1 any](defaultExpiration time.Duration, fn func(I1) (O1, error)) func(I1) (O1, error) {
+	m := &memoizer1To1[I1, O1]{
+		storage: cache.New(defaultExpiration, defaultExpiration/2),
 		group:   singleflight.Group{},
+		fn:      fn,
 	}
+	return m.do
 }
 
-// Memoize executes and returns the results of the given function, unless there was a cached value of the same key.
-// Only one execution is in-flight for a given key at a time.
-// The boolean return value indicates whether v was previously stored.
-func (m *Memoizer) Memoize(key string, fn func() (interface{}, error)) (interface{}, error, bool) {
-	// Check cache
-	value, found := m.Storage.Get(key)
-	if found {
-		return value, nil, true
-	}
-
-	// Combine memoized function with a cache store
-	value, err, _ := m.group.Do(key, func() (interface{}, error) {
-		data, innerErr := fn()
-
-		if innerErr == nil {
-			m.Storage.Set(key, data, cache.DefaultExpiration)
+func (m *memoizer1To1[I1, O1]) do(i1 I1) (O1, error) {
+	key := fmt.Sprint(i1)
+	_r, err, _ := m.group.Do(key, func() (interface{}, error) {
+		r, found := m.storage.Get(key)
+		if found {
+			return r, nil
 		}
 
-		return data, innerErr
+		r, err := m.fn(i1)
+		if err != nil {
+			// don't cache
+			return r, err
+		}
+
+		m.storage.Set(key, r, cache.DefaultExpiration)
+		return r, err
 	})
-	return value, err, false
+
+	var r O1
+	if _r != nil {
+		r = _r.(O1)
+	}
+	return r, err
 }

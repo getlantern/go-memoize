@@ -1,145 +1,55 @@
 package memoize
 
 import (
-	"errors"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/assertions"
-	"github.com/smartystreets/gunit"
+	"github.com/stretchr/testify/require"
 )
 
-/*
-	Testing goals, in order:
-
-	1) automatically parallel on the terminal
-	2) zero-ish overhead
-	3) tolerable syntax
-
-	For goal #1, Gunit seems to be the best-equipped to handle things, and there's some agreement on that:
-
-	> I know that I'm the creator of GoConvey and all, but I've actually moved to gunit,
-	> which uses t.Parallel() under the hood for every test case. - @mdwhatcott
-	> https://github.com/smartystreets/goconvey/issues/360
-
-	Test requirements:
-
-	1) Each test works independent of any preexisting state, or lack thereof.
-	2) Ideally tests can clean up after themselves, but this is not required.
-
-	Please keep these goals and requirements in mind when modifying this package.
-*/
-
-/*
-
-	A possible future goal:
-	4) ability to both hit a testing infra, and/or replay locally.
-
-	The best plan seems to be to incorporate go-vcr:
-	https://github.com/dnaeon/go-vcr
-
-	The implementation throws requests in YAML files, which... eh, let's try it maybe.
-	There will have to be some setup trickery to transparently hit live or recorded.
-	I think the vcr transport should handle that.
-*/
-
-// TestSuite fires off gunit.
-//
-// Gunit will look at various function name prefixes to determine behavior:
-//
-//   "Test": Well, it's a test.
-//   "Skip": Skipped.
-//   "Long": Skipped when `go test` is ran with the `short` flag.
-//
-//   "Setup":    Executed before each test.
-//   "Teardown": Executed after  each test.
-//
-// Functions without these prefixes are ignored.
-func TestSuite(t *testing.T) {
-	gunit.Run(new(F), t)
-}
-
-// F is the default fixture, so-named for convenience.
-type F struct {
-	*gunit.Fixture
-}
-
-// Setup prepares the fixture. Runs once per test.
-func (t *F) Setup() {
-
-}
-
-/*
-// An example test:
-func (t *F) TestExample() {
-	t.So(42, ShouldEqual, 42)
-	t.So("Hello, World!", ShouldContainSubstring, "World")
-}
-*/
-
-// TestBasic adopts the code from readme.md into a simple test case
-func (t *F) TestBasic() {
-	expensiveCalls := 0
-
-	// Function tracks how many times its been called
-	expensive := func() (interface{}, error) {
-		expensiveCalls++
-		return expensiveCalls, nil
+func Test1To1(t *testing.T) {
+	calls := int64(0)
+	wrapped := func(i1 string) (int64, error) {
+		atomic.AddInt64(&calls, 1)
+		return strconv.ParseInt(i1, 10, 64)
 	}
 
-	cache := NewMemoizer(90*time.Second, 10*time.Minute)
-
-	// First call SHOULD NOT be cached
-	result, err, cached := cache.Memoize("key1", expensive)
-	t.So(err, ShouldBeNil)
-	t.So(result.(int), ShouldEqual, 1)
-	t.So(cached, ShouldBeFalse)
-
-	// Second call on same key SHOULD be cached
-	result, err, cached = cache.Memoize("key1", expensive)
-	t.So(err, ShouldBeNil)
-	t.So(result.(int), ShouldEqual, 1)
-	t.So(cached, ShouldBeTrue)
-
-	// First call on a new key SHOULD NOT be cached
-	result, err, cached = cache.Memoize("key2", expensive)
-	t.So(err, ShouldBeNil)
-	t.So(result.(int), ShouldEqual, 2)
-	t.So(cached, ShouldBeFalse)
-}
-
-// TestFailure checks that failed function values are not cached
-func (t *F) TestFailure() {
-	calls := 0
-
-	// This function will fail IFF it has not been called before.
-	twoForTheMoney := func() (interface{}, error) {
-		calls++
-
-		if calls == 1 {
-			return calls, errors.New("Try again")
-		} else {
-			return calls, nil
-		}
+	memoized := Memoize1To1(50*time.Millisecond, wrapped)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := memoized("5")
+			require.NoError(t, err)
+			require.EqualValues(t, 5, r)
+			require.EqualValues(t, 1, atomic.LoadInt64(&calls))
+		}()
 	}
+	wg.Wait()
 
-	cache := NewMemoizer(90*time.Second, 10*time.Minute)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := memoized("7")
+			require.NoError(t, err)
+			require.EqualValues(t, 7, r)
+			require.EqualValues(t, 2, atomic.LoadInt64(&calls))
+		}()
+	}
+	wg.Wait()
 
-	// First call should fail, and not be cached
-	result, err, cached := cache.Memoize("key1", twoForTheMoney)
-	t.So(err, ShouldNotBeNil)
-	t.So(result.(int), ShouldEqual, 1)
-	t.So(cached, ShouldBeFalse)
+	_, err := memoized("bubba")
+	require.Error(t, err)
+	require.EqualValues(t, 3, atomic.LoadInt64(&calls))
 
-	// Second call should succeed, and not be cached
-	result, err, cached = cache.Memoize("key1", twoForTheMoney)
-	t.So(err, ShouldBeNil)
-	t.So(result.(int), ShouldEqual, 2)
-	t.So(cached, ShouldBeFalse)
-
-	// Third call should succeed, and be cached
-	result, err, cached = cache.Memoize("key1", twoForTheMoney)
-	t.So(err, ShouldBeNil)
-	t.So(result.(int), ShouldEqual, 2)
-	t.So(cached, ShouldBeTrue)
+	time.Sleep(100 * time.Millisecond)
+	r, err := memoized("5")
+	require.NoError(t, err)
+	require.EqualValues(t, 5, r)
+	require.EqualValues(t, 4, atomic.LoadInt64(&calls))
 }
