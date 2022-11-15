@@ -1,6 +1,7 @@
 package memoize
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -11,12 +12,12 @@ import (
 type memoizer1To1[I1 any, O1 any] struct {
 	storage *cache.Cache
 	group   singleflight.Group
-	fn      func(I1) (O1, error)
+	fn      func(context.Context, I1) (O1, error)
 }
 
 // Memoize1To1 memoizes a function with 1 input and 1 output parameter. If the underlying function errors,
 // the result is not cached.
-func Memoize1To1[I1 any, O1 any](defaultExpiration time.Duration, fn func(I1) (O1, error)) func(I1) (O1, error) {
+func Memoize1To1[I1 any, O1 any](defaultExpiration time.Duration, fn func(context.Context, I1) (O1, error)) func(context.Context, I1) (O1, error) {
 	m := &memoizer1To1[I1, O1]{
 		storage: cache.New(defaultExpiration, defaultExpiration/2),
 		group:   singleflight.Group{},
@@ -25,7 +26,7 @@ func Memoize1To1[I1 any, O1 any](defaultExpiration time.Duration, fn func(I1) (O
 	return m.do
 }
 
-func (m *memoizer1To1[I1, O1]) do(i1 I1) (O1, error) {
+func (m *memoizer1To1[I1, O1]) do(ctx context.Context, i1 I1) (O1, error) {
 	key := fmt.Sprint(i1)
 	_r, err, _ := m.group.Do(key, func() (interface{}, error) {
 		r, found := m.storage.Get(key)
@@ -33,7 +34,7 @@ func (m *memoizer1To1[I1, O1]) do(i1 I1) (O1, error) {
 			return r, nil
 		}
 
-		r, err := m.fn(i1)
+		r, err := m.fn(ctx, i1)
 		if err != nil {
 			// don't cache
 			return r, err

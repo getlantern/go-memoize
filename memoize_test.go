@@ -1,6 +1,7 @@
 package memoize
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,7 +13,7 @@ import (
 
 func Test1To1(t *testing.T) {
 	calls := int64(0)
-	wrapped := func(i1 string) (int64, error) {
+	wrapped := func(ctx context.Context, i1 string) (int64, error) {
 		atomic.AddInt64(&calls, 1)
 		return strconv.ParseInt(i1, 10, 64)
 	}
@@ -23,7 +24,7 @@ func Test1To1(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := memoized("5")
+			r, err := memoized(context.Background(), "5")
 			require.NoError(t, err)
 			require.EqualValues(t, 5, r)
 			require.EqualValues(t, 1, atomic.LoadInt64(&calls))
@@ -35,7 +36,7 @@ func Test1To1(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := memoized("7")
+			r, err := memoized(context.Background(), "7")
 			require.NoError(t, err)
 			require.EqualValues(t, 7, r)
 			require.EqualValues(t, 2, atomic.LoadInt64(&calls))
@@ -43,12 +44,12 @@ func Test1To1(t *testing.T) {
 	}
 	wg.Wait()
 
-	_, err := memoized("bubba")
+	_, err := memoized(context.Background(), "bubba")
 	require.Error(t, err)
 	require.EqualValues(t, 3, atomic.LoadInt64(&calls))
 
 	time.Sleep(100 * time.Millisecond)
-	r, err := memoized("5")
+	r, err := memoized(context.Background(), "5")
 	require.NoError(t, err)
 	require.EqualValues(t, 5, r)
 	require.EqualValues(t, 4, atomic.LoadInt64(&calls))
